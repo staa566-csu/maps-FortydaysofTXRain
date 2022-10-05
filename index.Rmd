@@ -1,0 +1,101 @@
+---
+title: "index"
+author: "Anne Goj"
+date: "2022-10-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, warning=FALSE,message=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(magrittr)
+library(maptools)
+```
+
+## Homework 3 Maps
+
+## Data Sources
+* Richards, B.J., 2021, Chronic Wasting Disease distribution in the United States by state and county: U.S. Geological Survey data release,  
+    + https://doi.org/10.5066/P9HQKKFO.
+    + https://www.sciencebase.gov/catalog/item/58068050e4b0824b2d1d415d
+* estimates of the current populations of deer, elk, and moose by state
+    + https://wildlifeinformer.com/deer-population-by-state/
+    + https://wildlifeinformer.com/elk-population-by-state/
+    + https://wildlifeinformer.com/moose-population-by-state/
+
+## Map of Extent of Chronic Wasting Disease in USA in 2021
+
+Chronic Wasting Disease (CWD) is a prion disease (like Mad Cow Disease) that affects cervids: deer, elk, and moose. US wildlife management bureaus are concerned that it spreading and because of the possibility for zoonotic spread to humans, may require hunters to submit samples of their kills for testing.  Although cervid are generally not considered domestic animals like cows or sheep, captive populations are not uncommon.
+I wanted to sreate a map that would show where there were reports of CWD in either captive or wild populations of cervids.  I also was curious which states would have the largest potential number of carriers.
+
+
+Read in all data.  Add boolean columns to indicate that a county had a reported case. I cleaned the animal populations in excel to remove commas from numbers and to take the lower value of an estimated range.
+
+```{r}
+elkC <- read.csv("20210224Captive.csv")
+elkW <- read.csv("20210224Wild.csv")
+elkW %<>% mutate(reported=TRUE) 
+elkC%<>% mutate(captive=TRUE)
+
+
+deerpop <- read.csv("estimateddeerpop.csv")
+deerpop %<>%mutate(Deer.Population=sum(White.tailed.Deer+Mule.Deer+Black.tailed.Deer+Other)) %>% select(State.Name,Deer.Population) 
+moosepop<- read.csv("estimatedmoosepop.csv")
+elkpop<- read.csv("estimatedelkpop.csv")
+```
+
+Join the populations of the animals on state name.  Sum the elk, moose, and deer and divide by the square mile area of the state to get an approximate density of cervids for the state.
+```{r}
+cervidpop <- elkpop %>% left_join(deerpop,by="State.Name")%>% left_join(moosepop,by="State.Name")%>% left_join(as_tibble(cbind(State.Name=state.name,state.area)),by="State.Name")
+cervidpop %<>% rename(Moose.Population=Estimated.Moose.Population)
+cervidpop %<>% mutate(state.area=as.numeric(state.area))
+cervidpop %<>% mutate(cerviddensity=(Elk.Population+Deer.Population+Moose.Population)/state.area)
+
+cervidpop %>% head()
+```
+
+
+Join the CWD date to a county map.  Fill the NAs from states without any reported cases.  Create a new factor that indicates if CWD was reported in captive populations, in wild populations, in both populations, or not reported.  Relevel the factor so it will plot legends in a meaningful order. 
+```{r}
+wildmap <- map_data("county") %>% mutate(across(.cols=c("region","subregion"),str_to_title)) %>% left_join(elkW,by=c("region"="State","subregion"="County"))%>% replace_na(list(reported=FALSE))
+wildmap2 <- wildmap %>% left_join(elkC,by=c("region"="State","subregion"="County"))%>% replace_na(list(captive=FALSE,Count=0))
+wildmap3 <- wildmap2 %>% left_join(cervidpop,by=c("region"="State.Name"))
+
+wildmap3 %<>% mutate(CWD=(ifelse(captive,ifelse(reported,"Captive,Wild","Captive"),ifelse(reported,"Wild","None"))))
+wildmap3$CWD <- factor(wildmap3$CWD, levels=c('Captive', 'Wild', 'Captive,Wild', 'None'))
+wildmap3 %>% filter(region=="Arkansas",subregion=="Boone") %>% head(3)
+```
+
+Plot the reported cases with polygons. Use the azimuthal equal-area projection to represent areas correctly (but distort angles.)  Add the overlay of the state borders. There are no reports of the disease yet in Alaska, so we can use only a map of the lower 48 states.
+```{r}
+
+wildmap3 %<>% mutate( mytext=paste(
+    "State: ", region, "\n",
+    "County: ", subregion, "\n",
+    "State's Est. cervids/square mile: ", cerviddensity, sep="")
+  )
+# +
+mapA <- ggplot()+geom_polygon(data=wildmap3,mapping=aes(x=long,y=lat,group=group,fill=CWD,text=mytext))+coord_map("azequalarea")+scale_fill_manual(values = c('lightskyblue',"palegreen1",'lightseagreen',"grey97"))
+
+mapA <-mapA+geom_polygon(data = map_data("state"),mapping = aes(x = long, y = lat,group = group),color="black", fill=NA)+ggdendro::theme_dendro()+
+    ggtitle("2021 Reports of Chronic Wasting Disease in US Counties")
+
+
+mapA
+# library(plotly)
+# ggplotly(mapA,tooltip="text")
+
+# +
+  # geom_point( data=(wildmap3 %>% filter(Count>0)), aes(x=long, y=lat))
+# +ggdendro::theme_dendro()+# + 
+          # scale_fill_manual(values = c("honeydew","red"))+ 
+# geom_polygon(mapping = aes(x=blue,y=lat,group=group,fill=captive),alpha=0.2,color="white"+ 
+          # 
+```
+```{r}
+# mapview::mapview(wildmap3,xcol="cerviddensity")
+```
+
