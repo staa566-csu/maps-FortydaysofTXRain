@@ -1,0 +1,184 @@
+---
+title: "index"
+author: "Anne Goj"
+date: "2022-10-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, warning=FALSE,message=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(magrittr)
+library(maptools)
+library(leaflet)
+library(tigris)
+```
+
+## Homework 3 Maps
+
+## Data Sources
+* Richards, B.J., 2021, Chronic Wasting Disease distribution in the United States by state and county: U.S. Geological Survey data release,  
+    + https://doi.org/10.5066/P9HQKKFO.
+    + https://www.sciencebase.gov/catalog/item/58068050e4b0824b2d1d415d
+* estimates of the current populations of deer, elk, and moose by state
+    + https://wildlifeinformer.com/deer-population-by-state/
+    + https://wildlifeinformer.com/elk-population-by-state/
+    + https://wildlifeinformer.com/moose-population-by-state/
+
+## Map of Extent of Chronic Wasting Disease in USA in 2021
+
+Chronic Wasting Disease (CWD) is a prion disease (like Mad Cow Disease) that affects cervids: deer, elk, and moose. US wildlife management bureaus are concerned that with its extent and the possibility for zoonotic spread to humans, may require hunters to submit samples of their kills for testing.  Although cervid are generally not considered domestic animals like cows or sheep, captive populations are not uncommon.
+I wanted to create a map that would show where there were reports of CWD in either captive or wild populations of cervids.  I also was curious which states would have the largest potential number of carriers. I made a choropleth in leaflet with hover information for each county and markers for the captive herd cases. I had some difficulty with R studio crashing, I think because of the Memory required for the tigris county data and leaflet plots. 
+
+
+## Data Cleaning
+Read in all data. Get the state FIPS codes that I will need to merge the data set to spatial files for leaflet. Add boolean columns to indicate that a county had a reported case. I cleaned the animal populations in excel to remove commas from numbers and to take the lower value of an estimated range.
+
+```{r}
+fips <- read.csv("fips.csv")
+fips %<>% mutate(region=str_to_title(str_trim(name)),fips=str_pad(FIPS.code,2,pad="0"))
+fips %>% head()
+
+elkC <- read.csv("20210224Captive.csv")
+elkW <- read.csv("20210224Wild.csv")
+elkW %<>% mutate(reported=TRUE) 
+elkC%<>% mutate(captive=TRUE)
+
+
+deerpop <- read.csv("estimateddeerpop.csv")
+deerpop %<>%mutate(Deer.Population=sum(White.tailed.Deer+Mule.Deer+Black.tailed.Deer+Other)) %>% select(State.Name,Deer.Population) 
+moosepop<- read.csv("estimatedmoosepop.csv")
+elkpop<- read.csv("estimatedelkpop.csv")
+```
+
+Join the populations of the animals on state name.  Sum the elk, moose, and deer and divide by the square mile area of the state to get an approximate density of cervids for the state.
+```{r}
+cervidpop <- elkpop %>% left_join(deerpop,by="State.Name")%>% left_join(moosepop,by="State.Name")%>% left_join(as_tibble(cbind(State.Name=state.name,state.area)),by="State.Name")
+cervidpop %<>% rename(Moose.Population=Estimated.Moose.Population)
+cervidpop %<>% mutate(state.area=as.numeric(state.area))
+cervidpop %<>% mutate(cerviddensity=(Elk.Population+Deer.Population+Moose.Population)/state.area)
+
+cervidpop %>% head()
+```
+
+
+Join the CWD date to a county map.  Fill the NAs from states without any reported cases.  Create a new factor that indicates if CWD was reported in captive populations, in wild populations, in both populations, or not reported.  Re-level the factor so it will plot legends in a meaningful order. 
+```{r}
+wildmap <- map_data("county") %>% mutate(across(.cols=c("region","subregion"),str_to_title)) %>% left_join(elkW,by=c("region"="State","subregion"="County"))%>% replace_na(list(reported=FALSE))
+wildmap3 <- wildmap %>% left_join(elkC,by=c("region"="State","subregion"="County"))%>% replace_na(list(captive=FALSE,Count=0))
+wildmap3 <- wildmap3 %>% left_join(cervidpop,by=c("region"="State.Name"))
+
+wildmap3 %<>% mutate(CWD=(ifelse(captive,ifelse(reported,"Captive,Wild","Captive"),ifelse(reported,"Wild","None"))))
+wildmap3$CWD <- factor(wildmap3$CWD, levels=c('Captive', 'Wild', 'Captive,Wild', 'None'))
+wildmap3 %<>% left_join(fips,by=c("region"="region"))
+wildmap3 %>% filter(region=="Arkansas",subregion=="Boone") %>% head(3)
+```
+
+
+### Simple GGPlot map
+
+Plot the reported cases with polygons. Use the azimuthal equal-area projection to represent areas correctly (but distort angles.)  Add the overlay of the state borders. There are no reports of the disease yet in Alaska, so we can use only a map of the lower 48 states.
+```{r}
+
+wildmap3 %<>% mutate( mytext=paste(
+    "State: ", region,
+    "County: ", subregion,
+    "State's Est. cervids/square mile: ", cerviddensity, sep="")
+  )
+# +
+mapA <- ggplot()+geom_polygon(data=wildmap3,mapping=aes(x=long,y=lat,group=group,fill=CWD,text=mytext))+coord_map("azequalarea")+scale_fill_manual(values = c('lightskyblue',"palegreen1",'lightseagreen',"grey97"))
+
+mapA <-mapA+geom_polygon(data = map_data("state"),mapping = aes(x = long, y = lat,group = group),color="black", fill=NA)+ggdendro::theme_dendro()+
+    ggtitle("2021 Reports of Chronic Wasting Disease in US Counties")
+
+
+mapA
+```
+
+### Alternative choropleth in leaflet
+It would be nice to be able to zoom in and to have markers for the captive herd cases.  I will try to recreate this map in Leaflet to make it more interactive.
+
+Set up labels for markers and for counties.
+```{r}
+
+captive_cases <- wildmap3 %>% dplyr::filter(Count>0)%>% dplyr::group_by(region,subregion) %>% dplyr::summarise(countylong=mean(long),countylat=mean(lat),Count=head(Count,1))
+captive_cases %<>% mutate( mytext=paste(
+    "State: ", region, "<br>",
+    "County: ", subregion, "<br>",
+    "Reported captive cases: ", Count, sep="")
+  )
+wildmap3 %<>% mutate( mytext2=paste(
+    "State: ", region, "\n",
+    "County: ", subregion, "\n",
+    "CWD in herds?:",CWD,"\n",
+    "State cervid density, per sq mile: ", round(cerviddensity), sep="")
+  )
+```
+
+
+Get a spatial map for the counties from tigris package.
+```{r,message=FALSE}
+t_counties <- tigris::counties(cb = TRUE, progress_bar=FALSE)
+```
+
+```{r}
+head(t_counties)
+```
+
+
+
+We can join the spatial county file on the CWD data by state and county.
+```{r}
+wildmap_tigris <- t_counties %>% 
+  left_join(wildmap3, 
+            by = c("STATEFP" = "fips","NAME"="subregion") )  
+head(wildmap_tigris)
+```
+
+We can make a marker map of the reports of CWD in captive herds.
+```{r}
+leaflet1 <- leaflet(t_counties) %>% 
+  setView(lng = -95, lat = 39, zoom = 4) %>% 
+  addTiles() %>% addMarkers(data=captive_cases,lng=~countylong,lat=~countylat,popup=~mytext,clusterOptions = markerClusterOptions())
+leaflet1 
+```
+
+
+We now add these markers to a map with a choropleth.
+```{r}
+# define color palette
+pal <- colorFactor(
+  palette = "magma",
+  domain = wildmap_tigris$CWD)
+
+# make map with CWD
+p_CWD_leaflet <- leaflet(wildmap_tigris %>%  dplyr::filter(!CWD=='None')) %>%
+  setView(lng = -95, lat = 39, zoom = 4) %>% 
+  addTiles()  %>% 
+  addPolygons(
+    fillColor = ~pal(CWD),
+    weight = 1,
+    opacity = 1,
+    color = "white",
+    dashArray = "3",
+    fillOpacity = 0.7,
+    highlightOptions = highlightOptions(
+      weight = 5,
+      color = "#666",
+      dashArray = "",
+      fillOpacity = 0.7,
+      bringToFront = TRUE),
+    label = ~mytext2
+    ) %>% addMarkers(data=captive_cases,lng=~countylong,lat=~countylat,popup=~mytext,clusterOptions = markerClusterOptions())
+```
+
+```{r}
+p_CWD_leaflet
+```
+
+
+
+
