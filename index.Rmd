@@ -30,8 +30,8 @@ library(tigris)
 
 ## Map of Extent of Chronic Wasting Disease in USA in 2021
 
-Chronic Wasting Disease (CWD) is a prion disease (like Mad Cow Disease) that affects cervids: deer, elk, and moose. US wildlife management bureaus are concerned that it spreading and because of the possibility for zoonotic spread to humans, may require hunters to submit samples of their kills for testing.  Although cervid are generally not considered domestic animals like cows or sheep, captive populations are not uncommon.
-I wanted to create a map that would show where there were reports of CWD in either captive or wild populations of cervids.  I also was curious which states would have the largest potential number of carriers. I made a choropleth in leaflet with hover information for each county and markers for the captive herd cases.
+Chronic Wasting Disease (CWD) is a prion disease (like Mad Cow Disease) that affects cervids: deer, elk, and moose. US wildlife management bureaus are concerned that with its extent and the possibility for zoonotic spread to humans, may require hunters to submit samples of their kills for testing.  Although cervid are generally not considered domestic animals like cows or sheep, captive populations are not uncommon.
+I wanted to create a map that would show where there were reports of CWD in either captive or wild populations of cervids.  I also was curious which states would have the largest potential number of carriers. I made a choropleth in leaflet with hover information for each county and markers for the captive herd cases. I had some difficulty with R studio crashing, I think because of the Memory required for the tigris county data and leaflet plots. 
 
 
 ## Data Cleaning
@@ -68,8 +68,8 @@ cervidpop %>% head()
 Join the CWD date to a county map.  Fill the NAs from states without any reported cases.  Create a new factor that indicates if CWD was reported in captive populations, in wild populations, in both populations, or not reported.  Re-level the factor so it will plot legends in a meaningful order. 
 ```{r}
 wildmap <- map_data("county") %>% mutate(across(.cols=c("region","subregion"),str_to_title)) %>% left_join(elkW,by=c("region"="State","subregion"="County"))%>% replace_na(list(reported=FALSE))
-wildmap2 <- wildmap %>% left_join(elkC,by=c("region"="State","subregion"="County"))%>% replace_na(list(captive=FALSE,Count=0))
-wildmap3 <- wildmap2 %>% left_join(cervidpop,by=c("region"="State.Name"))
+wildmap3 <- wildmap %>% left_join(elkC,by=c("region"="State","subregion"="County"))%>% replace_na(list(captive=FALSE,Count=0))
+wildmap3 <- wildmap3 %>% left_join(cervidpop,by=c("region"="State.Name"))
 
 wildmap3 %<>% mutate(CWD=(ifelse(captive,ifelse(reported,"Captive,Wild","Captive"),ifelse(reported,"Wild","None"))))
 wildmap3$CWD <- factor(wildmap3$CWD, levels=c('Captive', 'Wild', 'Captive,Wild', 'None'))
@@ -78,7 +78,7 @@ wildmap3 %>% filter(region=="Arkansas",subregion=="Boone") %>% head(3)
 ```
 
 
-### Simply GGPlot map
+### Simple GGPlot map
 
 Plot the reported cases with polygons. Use the azimuthal equal-area projection to represent areas correctly (but distort angles.)  Add the overlay of the state borders. There are no reports of the disease yet in Alaska, so we can use only a map of the lower 48 states.
 ```{r}
@@ -101,7 +101,7 @@ mapA
 ### Alternative choropleth in leaflet
 It would be nice to be able to zoom in and to have markers for the captive herd cases.  I will try to recreate this map in Leaflet to make it more interactive.
 
-Tally the number of cases per state that have been recorded in captive heards
+Set up labels for markers and for counties.
 ```{r}
 
 captive_cases <- wildmap3 %>% dplyr::filter(Count>0)%>% dplyr::group_by(region,subregion) %>% dplyr::summarise(countylong=mean(long),countylat=mean(lat),Count=head(Count,1))
@@ -119,9 +119,12 @@ wildmap3 %<>% mutate( mytext2=paste(
 ```
 
 
-Get a spatial map for the counties
+Get a spatial map for the counties from tigris package.
+```{r,message=FALSE}
+t_counties <- tigris::counties(cb = TRUE, progress_bar=FALSE)
+```
+
 ```{r}
-t_counties <- tigris::counties(cb = TRUE)
 head(t_counties)
 ```
 
@@ -129,12 +132,6 @@ head(t_counties)
 
 We can join the spatial county file on the CWD data by state and county.
 ```{r}
-
-# labs <- lapply(wildmap_tigris$mytext2,htmltools::HTML)
-# labels <- sprintf(
-#   "%s County",wildmap_tigris$NAMELSAD
-# ) %>% lapply(htmltools::HTML)
-
 wildmap_tigris <- t_counties %>% 
   left_join(wildmap3, 
             by = c("STATEFP" = "fips","NAME"="subregion") )  
